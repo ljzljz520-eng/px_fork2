@@ -19,6 +19,90 @@ jobs:
           token: ${{secrets.JOHAN_GITHUB_API_TOKEN}}
           formula: px
 
+  release-manifest:
+    # The px.pex artifact is attached to the release by the maintainer
+    # *before* publishing, so this job can download those exact bytes, bind
+    # them to the release tag in a versioned integrity manifest and upload
+    # the manifest as another release asset. install.sh refuses to install
+    # anything that is not covered by such a manifest.
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Check out repository code
+        uses: actions/checkout@v4
+        with:
+          # For getting tags from the repo
+          fetch-depth: 0
+          fetch-tags: true
+      - name: Force git describe to show the right tag
+        # Workaround for: https://github.com/actions/checkout/issues/882
+        run: |
+          git describe --dirty
+          git fetch --tags --force
+          git describe --dirty
+      - name: Download the manually attached px.pex artifact
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.event.release.tag_name }}
+        run: |
+          set -euxo pipefail
+          mkdir -p release-assets
+          if ! gh release download "$TAG" --repo "$GITHUB_REPOSITORY" \
+              --pattern 'px.pex' --dir release-assets --clobber; then
+            echo "::error::px.pex was not found on release $TAG. Attach px.pex" \
+              "to the release and re-run this job."
+            exit 1
+          fi
+          test -f release-assets/px.pex
+      - name: Coordinate artifact version with the release tag
+        run: |
+          set -euxo pipefail
+          chmod a+x release-assets/px.pex
+          # A released pex is built at the tag, so --version must report the
+          # tag exactly. This rejects attaching a stale or wrong-generation
+          # px.pex to a release.
+          REPORTED="$(release-assets/px.pex --version | head -n1)"
+          echo "Artifact reports version: $REPORTED"
+          echo "Release tag is:            ${{ github.event.release.tag_name }}"
+          test "$REPORTED" = "${{ github.event.release.tag_name }}"
+      - name: Generate versioned integrity manifest
+        run: |
+          set -euxo pipefail
+          devbin/make-release-manifest.sh \
+            "${{ github.event.release.tag_name }}" \
+            release-assets/px-manifest.json \
+            release-assets/px.pex
+          cat release-assets/px-manifest.json
+      - name: Verify manifest schema
+        run: |
+          python3 - release-assets/px-manifest.json "${{ github.event.release.tag_name }}" <<'PY'
+          import json
+          import re
+          import sys
+
+          doc = json.load(open(sys.argv[1], encoding="utf-8"))
+          tag = sys.argv[2]
+          assert doc["schema_version"] == 1, doc
+          assert re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", doc["version"]), doc
+          assert doc["version"] == tag, (doc, tag)
+          artifacts = doc["artifacts"]
+          assert len(artifacts) == 1, doc
+          pex = artifacts[0]
+          assert pex["name"] == "px.pex", doc
+          assert isinstance(pex["size"], int) and pex["size"] > 0, doc
+          assert re.fullmatch(r"[0-9a-f]{64}", pex["sha256"]), doc
+          assert pex["version"] == tag, doc
+          print("Manifest schema OK")
+          PY
+      - name: Upload manifest to the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.event.release.tag_name }}
+        run: |
+          gh release upload "$TAG" release-assets/px-manifest.json \
+            --repo "$GITHUB_REPOSITORY" --clobber
+
   pypi:
     runs-on: ubuntu-latest
     environment:

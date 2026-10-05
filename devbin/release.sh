@@ -113,6 +113,12 @@ your "px.pex" file that was just built to the release.
 
 After uploading that file, press "Publish release".
 
+IMPORTANT: px.pex must be attached BEFORE publishing. The "Continuous
+Delivery" workflow then downloads the attached px.pex, verifies that its
+--version matches the release tag, and attaches a "px-manifest.json"
+integrity manifest (name, size, SHA-256 and version) to the release.
+install.sh refuses to install releases without a valid manifest.
+
 EOM
 
 read -r -p "Press ENTER when done: "
@@ -120,6 +126,13 @@ read -r -p "Press ENTER when done: "
 cat <<EOM
 
 ==
+Now verify the release-manifest job here:
+* https://github.com/walles/px/actions?query=workflow%3A%22Continuous+Delivery%22
+
+It must have succeeded and "px-manifest.json" must be listed among the
+release assets. If the job failed (for example because px.pex was attached
+too late), attach px.pex to the release and then re-run the failed job.
+
 Your release should now be visible here:
 * https://github.com/walles/px/releases/latest
 * https://formulae.brew.sh/formula/px (or at least there should be a PR open)
